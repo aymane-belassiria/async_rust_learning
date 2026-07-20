@@ -1,2 +1,1 @@
-#[path = "ch1/ch1.rs"]
-pub mod ch1;
+pub mod chapters;

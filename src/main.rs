@@ -1,4 +1,4 @@
-use learn_asyn_rust::ch1;
+use learn_asyn_rust::chapters::ch1;
 fn main() {
     ch1::create_thread();
     ch1::thread_move();
