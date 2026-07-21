@@ -243,6 +243,62 @@ pub enum Poll<T> {
 
 That's the whole trait. A future is just a struct with a `poll` method that either says "done, here's your value" or "not yet."
 
+### A future written entirely by hand, no `async`/`await` anywhere
+
+Before looking at sugar, it helps to see the desugared form actually run. Here's a future that's `Pending` on the first poll and `Ready` on the second:
+
+```rust
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+struct CountToTwo {
+    polled_once: bool,
+}
+
+impl Future for CountToTwo {
+    type Output = &'static str;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.polled_once {
+            Poll::Ready("done!")
+        } else {
+            self.polled_once = true;
+            cx.waker().wake_by_ref(); // nothing to wait on, so ask to be polled again now
+            Poll::Pending
+        }
+    }
+}
+```
+
+Nothing here is `async` — it's a plain struct and a plain trait impl. And since `Future` alone doesn't run anything (Fact 3, below), driving it means writing the executor loop yourself too:
+
+```rust
+use std::sync::Arc;
+use std::task::{Wake, Waker};
+
+struct NoopWaker;
+impl Wake for NoopWaker {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn block_on<F: Future>(mut fut: F) -> F::Output {
+    let waker = Waker::from(Arc::new(NoopWaker));
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = unsafe { Pin::new_unchecked(&mut fut) }; // fut is never moved after this
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(val) => return val,
+            Poll::Pending => continue, // a real executor would sleep/park here instead
+        }
+    }
+}
+
+block_on(CountToTwo { polled_once: false }); // -> "done!"
+```
+
+This `block_on` is a toy — it busy-loops instead of parking the thread, and the waker does nothing — but it's structurally the same job tokio's real executor does: hold a future, poll it, react to `Pending`/`Ready`. Every `async fn` you write compiles down to something that could, in principle, be driven this same way.
+
 ### The three facts that dissolve most confusion
 
 **Fact 1: Futures are LAZY. Nothing happens until you `.await` them.**
@@ -272,6 +328,59 @@ fn fetch_num() -> impl Future<Output = u32> {
 ```
 
 The compiler transforms the body into a **state machine** — a struct that remembers where it was between `poll` calls. Every `.await` is a possible pause point where the state machine can be suspended and resumed later.
+
+That's easy to believe with zero `.await` points; it's worth seeing what happens with one. Take:
+
+```rust
+async fn greet(inner: impl Future<Output = &'static str>) -> String {
+    println!("before await");
+    let name = inner.await;
+    format!("hello, {name}")
+}
+```
+
+The compiler turns this into roughly an enum with one variant per pause point, plus a `poll` that resumes wherever it left off:
+
+```rust
+enum GreetState<F> {
+    Start(F),          // haven't run yet
+    WaitingOnInner(F),  // suspended at the `.await`
+    Done,               // already returned, can't be polled again
+}
+
+struct Greet<F> {
+    state: GreetState<F>,
+}
+
+impl<F: Future<Output = &'static str>> Future for Greet<F> {
+    type Output = String;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match std::mem::replace(&mut self.state, GreetState::Done) {
+                GreetState::Start(inner) => {
+                    println!("before await");
+                    self.state = GreetState::WaitingOnInner(inner);
+                    // fall through to poll `inner` immediately
+                }
+                GreetState::WaitingOnInner(mut inner) => {
+                    // SAFETY: `inner` is never moved once pinned.
+                    match unsafe { Pin::new_unchecked(&mut inner) }.poll(cx) {
+                        Poll::Ready(name) => return Poll::Ready(format!("hello, {name}")),
+                        Poll::Pending => {
+                            self.state = GreetState::WaitingOnInner(inner);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                GreetState::Done => panic!("polled after completion"),
+            }
+        }
+    }
+}
+```
+
+This is the shape (simplified — the real compiler-generated struct is anonymous and stores captured variables per-variant) of what every `async fn` becomes: an enum tracking "where am I paused," a `poll` that resumes from that point, and one variant transition per `.await`. `.await` itself is sugar for "poll the inner future; if `Pending`, save my state and return `Pending` too; if `Ready`, take the value and keep going." Nothing about it is magic — it's a state machine you'd otherwise write by hand, which is exactly why hand-writing a `Future` (as `CountToTwo` did above) feels like doing the compiler's job manually.
 
 **Fact 3: Someone has to poll. That someone is the runtime (executor).**
 
