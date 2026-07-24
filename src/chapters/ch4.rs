@@ -37,3 +37,17 @@ pub fn block_on<F: Future>(mut fut: F) -> F::Output{
     }
 }
 
+
+pub async fn hello(){
+    println!("hello from async");
+}
+
+
+/*
+async fn num() -> u8 {4}
+is equivalent of 
+fn num() -> impl Future<Output = u8>{
+    async { 4 }
+}
+*/
+
