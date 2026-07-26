@@ -1,4 +1,4 @@
-use tokio::{sync::{mpsc, oneshot}, time::{Duration, sleep}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener, sync::{mpsc, oneshot}, time::{Duration, sleep}};
 pub async fn tokio_spawn(){
     let handle = tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -52,10 +52,34 @@ pub async fn tokio_channels(){
 
     //one sender one receiver
 
+    
     let (tx, rx) = oneshot::channel::<u32>();
     tokio::spawn(async move{
         let _ = tx.send(42);
     });
     let answer = rx.await.unwrap();
     println!("recieved: {answer}");
+}
+
+//mini tcp server
+
+pub async fn mini_server(){
+    let listener = TcpListener::bind("127.0.0.1:1337").await.unwrap();
+    println!("listening on 1337");
+    loop{
+        let (mut socket, addr) = listener.accept().await.unwrap();
+        tokio::spawn(async move{
+            println!("client: {addr}");
+            let mut buf = [0u8; 1024];
+            loop{
+                match socket.read(&mut buf).await{
+                    Ok(0) => return,
+                    Ok(n) => {
+                        if socket.write_all(&buf[..n]).await.is_err(){return;}
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+    }
 }
