@@ -1,4 +1,8 @@
-use learn_asyn_rust::chapters::{ch4};
-fn main() {
-    ch4::hello();
+use learn_asyn_rust::chapters::{ch6};
+
+//tokio::main works like block_on function that we created in ch4
+#[tokio::main]
+async fn main() {
+    //ch6::tokio_spawn().await;
+    ch6::tokio_join_spawn_select().await;
 }
