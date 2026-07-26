@@ -1,4 +1,4 @@
-use tokio::time::{sleep, Duration};
+use tokio::{sync::{mpsc, oneshot}, time::{Duration, sleep}};
 pub async fn tokio_spawn(){
     let handle = tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -39,4 +39,23 @@ pub async fn tokio_join_spawn_select(){
         result = fetch(1) => println!("got {result}"),
         _ = sleep(Duration::from_secs(2)) => println!("time out"),
     }
+}
+
+pub async fn tokio_channels(){
+    let (tx, mut rx) = mpsc::channel::<String>(32);
+    tokio::spawn(async move{
+        tx.send("job 1".into()).await.unwrap();
+    });
+    while let Some(msg) = rx.recv().await{
+        println!("got {msg}");
+    }
+
+    //one sender one receiver
+
+    let (tx, rx) = oneshot::channel::<u32>();
+    tokio::spawn(async move{
+        let _ = tx.send(42);
+    });
+    let answer = rx.await.unwrap();
+    println!("recieved: {answer}");
 }
